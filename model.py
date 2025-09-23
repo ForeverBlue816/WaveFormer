@@ -3,7 +3,6 @@ from functools import partial
 import random
 import math
 
-
 from timm.models.vision_transformer import Block
 from timm.models.layers import trunc_normal_
 from timm.models.layers import Mlp
@@ -18,11 +17,8 @@ import torch.nn as nn
 
 from util.patch_embed import PatchEmbed
 
-
 from functools import partial
 import pywt
-
-
 
 
 ############################################
@@ -31,11 +27,12 @@ import pywt
 
 def create_learnable_wavelet_filter(wave, in_size, out_size, init_scale=1.0, dtype=torch.float32):
     """
-    Initialize dec/rec filters from a given pywt.Wavelet and set them as learnable (nn.Parameter).
+    Initialize decomposition and reconstruction filters from a given pywt.Wavelet 
+    and set them as learnable parameters (nn.Parameter).
     """
     w = pywt.Wavelet(wave)
 
-    # dec (decomposition filters)
+    # Decomposition filters
     dec_hi = torch.tensor(w.dec_hi[::-1], dtype=dtype)
     dec_lo = torch.tensor(w.dec_lo[::-1], dtype=dtype)
     dec_filters_2d = torch.stack([
@@ -48,7 +45,7 @@ def create_learnable_wavelet_filter(wave, in_size, out_size, init_scale=1.0, dty
     dec_filters_2d = dec_filters_2d * init_scale
     dec_filters_2d = nn.Parameter(dec_filters_2d, requires_grad=True)
 
-    # rec (reconstruction filters)
+    # Reconstruction filters
     rec_hi = torch.tensor(w.rec_hi[::-1], dtype=dtype).flip(dims=[0])
     rec_lo = torch.tensor(w.rec_lo[::-1], dtype=dtype).flip(dims=[0])
     rec_filters_2d = torch.stack([
@@ -75,11 +72,10 @@ def wavelet_transform(x, filters):
         out: (B, C, 4, newH, newW), where each channel has been decomposed into LL, LH, HL, HH
     """
     b, c, h, w = x.shape
-    # filters: [4*C, 1, kH, kW]
-    # compute pad for 2D convolution (if kH,kW are odd => pad=(kW//2, kH//2))
+    # Compute padding for 2D convolution (if kH,kW are odd => pad=(kW//2, kH//2))
     pad = (filters.shape[-1] // 2, filters.shape[-2] // 2)
 
-    # use x as input, filters as weights
+    # Use x as input, filters as weights
     # bias=None means no bias; stride=2 for downsampling; groups=c for depthwise
     out = F.conv2d(
         x,
@@ -112,10 +108,10 @@ def inverse_wavelet_transform(x, filters):
     # c*4 must match filters out_channels (4*C)
     out = x.reshape(b, c*4, hh, ww)  # => [B, 4*C, hh, ww]
 
-    # same pad logic as wavelet_transform
+    # Same padding logic as wavelet_transform
     pad = (filters.shape[3] // 2, filters.shape[2] // 2)  # (padW, padH)
 
-    # inverse convolution: stride=2 for upsampling, groups=c
+    # Inverse convolution: stride=2 for upsampling, groups=c
     out = F.conv_transpose2d(
         out,
         filters,
@@ -165,7 +161,7 @@ class WTConv2d(nn.Module):
         self.stride = stride
         self.highfreq_dropout = highfreq_dropout
 
-        # 1) learnable dec/iwt filters
+        # Learnable decomposition/reconstruction filters
         dec_filters, rec_filters = create_learnable_wavelet_filter(
             wave=wt_type,
             in_size=in_channels,
@@ -175,11 +171,11 @@ class WTConv2d(nn.Module):
         self.wt_filter = dec_filters
         self.iwt_filter = rec_filters
 
-        # partial wavelet transform
+        # Partial wavelet transform
         self.wt_function = partial(wavelet_transform, filters=self.wt_filter)
         self.iwt_function = partial(inverse_wavelet_transform, filters=self.iwt_filter)
 
-        # 2) depthwise conv for the lowest-frequency sub-band
+        # Depthwise conv for the lowest-frequency sub-band
         self.base_conv = nn.Conv2d(
             in_channels, in_channels,
             kernel_size=kernel_size,
@@ -188,7 +184,7 @@ class WTConv2d(nn.Module):
         )
         self.base_scale = _ScaleModule([1, in_channels, 1, 1], init_scale=1.0)
 
-        # 3) for each wavelet level, apply an extra conv on (LF + HF) sub-bands
+        # For each wavelet level, apply an extra conv on (LF + HF) sub-bands
         # wavelet_convs: shape=(C*4)->(C*4) depthwise
         self.wavelet_convs = nn.ModuleList([
             nn.Conv2d(
@@ -203,7 +199,7 @@ class WTConv2d(nn.Module):
             for _ in range(wt_levels)
         ])
 
-        # 4) optional stride
+        # Optional stride
         if stride > 1:
             self.stride_filter = nn.Parameter(torch.ones(in_channels, 1, 1, 1), requires_grad=False)
             def do_stride(x_in):
@@ -230,63 +226,63 @@ class WTConv2d(nn.Module):
 
         curr_x_ll = x
 
-        # ---- Forward wavelet decomposition multi-level ----
+        # Forward wavelet decomposition multi-level
         for lvl in range(self.wt_levels):
             curr_shape = curr_x_ll.shape
             shapes_in_levels.append(curr_shape)
 
-            # pad if needed to ensure even dimensions
+            # Pad if needed to ensure even dimensions
             if (curr_shape[2] % 2 != 0) or (curr_shape[3] % 2 != 0):
                 pad_h = curr_shape[2] % 2
                 pad_w = curr_shape[3] % 2
                 curr_x_ll = F.pad(curr_x_ll, (0, pad_w, 0, pad_h))
 
-            # wavelet transform => [B, C, 4, H/2, W/2]
+            # Wavelet transform => [B, C, 4, H/2, W/2]
             dec_out = self.wt_function(curr_x_ll)
 
-            # split LF (LL) => dec_out[:, :, 0, ...]
+            # Split LF (LL) => dec_out[:, :, 0, ...]
             # and HF => dec_out[:, :, 1:4, ...]
             lf = dec_out[:, :, 0, :, :]
             hf = dec_out[:, :, 1:4, :, :]
 
-            # reshape => [B, C*4, H/2, W/2]
+            # Reshape => [B, C*4, H/2, W/2]
             out_reshape = dec_out.view(dec_out.shape[0], dec_out.shape[1]*4, dec_out.shape[3], dec_out.shape[4])
 
-            # apply depthwise conv on (LF + HF)
+            # Apply depthwise conv on (LF + HF)
             out_reshape = self.wavelet_convs[lvl](out_reshape)
             out_reshape = self.wavelet_scale[lvl](out_reshape)
-            # reshape back => [B, C, 4, H/2, W/2]
+            # Reshape back => [B, C, 4, H/2, W/2]
             out_reshape = out_reshape.view(*dec_out.shape)
 
-            # re-split LF, HF
+            # Re-split LF, HF
             lf = out_reshape[:, :, 0, :, :]
             hf = out_reshape[:, :, 1:4, :, :]
 
-            # optional dropout on HF
+            # Optional dropout on HF
             if self.highfreq_dropout > 0.0 and self.training:
                 hf = F.dropout(hf, p=self.highfreq_dropout, training=True)
 
-            # cat them back
+            # Concatenate them back
             dec_out = torch.cat([lf.unsqueeze(2), hf], dim=2)  # => [B, C, 4, H/2, W/2]
 
-            # store LF for next level; store HF as well
+            # Store LF for next level; store HF as well
             curr_x_ll = dec_out[:, :, 0, :, :]
             x_ll_in_levels.append(curr_x_ll)
             x_h_in_levels.append(dec_out[:, :, 1:4, :, :])
 
-        # ---- Inverse wavelet transform multi-level ----
+        # Inverse wavelet transform multi-level
         next_x_ll = 0
         for lvl in reversed(range(self.wt_levels)):
             curr_x_ll = x_ll_in_levels[lvl]
             curr_x_h = x_h_in_levels[lvl]
             curr_shape = shapes_in_levels[lvl]
 
-            # combine
+            # Combine
             curr_x_ll = curr_x_ll + next_x_ll
             cat_4 = torch.cat([curr_x_ll.unsqueeze(2), curr_x_h], dim=2)  # [B, C, 4, h_half, w_half]
             recon = self.iwt_function(cat_4)
 
-            # slice back to original resolution
+            # Slice back to original resolution
             Horig, Worig = curr_shape[2], curr_shape[3]
             recon = recon[:, :, :Horig, :Worig]
 
@@ -294,13 +290,13 @@ class WTConv2d(nn.Module):
 
         x_tag = next_x_ll
 
-        # ---- base conv on input x (lowest freq) ----
+        # Base conv on input x (lowest freq)
         x_base = self.base_conv(x)  # [B, C, H, W]
         x_base = self.base_scale(x_base)
 
         out = x_base + x_tag
 
-        # optional stride
+        # Optional stride
         if self.do_stride is not None:
             out = self.do_stride(out)
 
@@ -317,7 +313,7 @@ class DepthwiseSeparableConvWithWTConv2d(nn.Module):
         super(DepthwiseSeparableConvWithWTConv2d, self).__init__()
         # WTConv2d requires in==out for the depthwise part
         self.depthwise = WTConv2d(in_channels, in_channels, kernel_size=kernel_size)
-        # pointwise to expand in_channels => out_channels
+        # Pointwise to expand in_channels => out_channels
         self.pointwise = nn.Conv2d(
             in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False
         )
@@ -327,20 +323,21 @@ class DepthwiseSeparableConvWithWTConv2d(nn.Module):
         x = self.pointwise(x)   # [B, out_channels, H, W]
         return x
 
+
 class RotaryEmbedding(nn.Module):
     """
-    用于对给定维度 (dim) 的张量做旋转位置编码 (RoPE)，
-    假设 x 的 shape 为 [B, nHeads, N, dim], 其中 dim==self.dim (必须偶数)。
+    Rotary Positional Embedding (RoPE) for a given dimension.
+    Assumes x has shape [B, nHeads, N, dim], where dim == self.dim (must be even).
     
-    step:
-      1) 生成 cos, sin, 大小 [N, dim//2] => 再unsqueeze到 [N,1,1,dim//2] 用于广播
-      2) permute x => [N, B, nHeads, dim], reshape => [N, B, nHeads, dim//2, 2]
-      3) 分拆偶数/奇数维度 (x_even, x_odd)，套用 RoPE 公式
-      4) 还原到 [N, B, nHeads, dim]，再 permute 回 [B, nHeads, N, dim]
+    Steps:
+      1) Generate cos, sin with size [N, dim//2] => unsqueeze to [N,1,1,dim//2] for broadcasting
+      2) Permute x => [N, B, nHeads, dim], reshape => [N, B, nHeads, dim//2, 2]
+      3) Split even/odd dimensions (x_even, x_odd), apply RoPE formula
+      4) Restore to [N, B, nHeads, dim], then permute back to [B, nHeads, N, dim]
     """
     def __init__(self, dim, base=10000):
         super().__init__()
-        # dim 必须是偶数
+        # Dimension must be even
         assert dim % 2 == 0, "RoPE dimension must be even."
         self.dim = dim
         self.base = base
@@ -348,50 +345,50 @@ class RotaryEmbedding(nn.Module):
     def forward(self, x, seq_len):
         """
         x: [B, nHeads, N, dim], where dim == self.dim
-        seq_len: N (序列长度)
-        return: 同维度 [B, nHeads, N, dim]，已经做完旋转
+        seq_len: N (sequence length)
+        return: Same dimension [B, nHeads, N, dim], with rotation applied
         """
         B, H, N, D = x.shape
         assert D == self.dim, f"RoPEEmbedding: dim mismatch, expect {self.dim}, got {D}"
         assert N == seq_len, f"RoPEEmbedding: seq_len {seq_len} vs x.shape[2] {N} mismatch"
 
-        # (1) 生成 cos/sin
-        #     pos: [N], inv_freq: [dim//2], => freqs: [N, dim//2]
+        # Generate cos/sin
+        # pos: [N], inv_freq: [dim//2], => freqs: [N, dim//2]
         pos = torch.arange(seq_len, dtype=torch.float32, device=x.device)
         inv_freq = 1.0 / (self.base ** (torch.arange(0, D, 2, device=x.device).float() / D))
         freqs = pos[:, None] * inv_freq[None, :]  # => [N, dim//2]
         cos_val = torch.cos(freqs).unsqueeze(1).unsqueeze(1)  # => [N,1,1,dim//2]
         sin_val = torch.sin(freqs).unsqueeze(1).unsqueeze(1)  # => [N,1,1,dim//2]
 
-        # (2) permute => [N, B, H, D]
+        # Permute => [N, B, H, D]
         x_reshape = x.permute(2, 0, 1, 3)  # => [N, B, H, D]
-        # (3) reshape => [N, B, H, (dim//2), 2], 拆分偶/奇维
+        # Reshape => [N, B, H, (dim//2), 2], split even/odd dimensions
         x_reshape = x_reshape.reshape(N, B, H, D // 2, 2)
         x_even = x_reshape[..., 0]
         x_odd  = x_reshape[..., 1]
 
-        # (4) RoPE公式:
-        #  x_even' = x_even * cos - x_odd * sin
-        #  x_odd'  = x_even * sin + x_odd * cos
+        # RoPE formula:
+        # x_even' = x_even * cos - x_odd * sin
+        # x_odd'  = x_even * sin + x_odd * cos
         x_even_out = x_even * cos_val - x_odd * sin_val
         x_odd_out  = x_even * sin_val + x_odd * cos_val
 
-        # (5) 拼回
+        # Combine back
         x_out = torch.stack([x_even_out, x_odd_out], dim=-1)
         x_out = x_out.reshape(N, B, H, D)  # => [N, B, H, D]
 
-        # (6) permute回去 => [B, H, N, D]
+        # Permute back => [B, H, N, D]
         x_out = x_out.permute(1, 2, 0, 3)
         return x_out
 
 
 class RoPEAttention(nn.Module):
     """
-    在 Q/K 上应用 RoPE 的多头注意力。
-    1) 取输入 x: [B, N, C], 其中 N=seq_len, C=embed_dim
-    2) 做线性 qkv => Q,K,V: [B, H, N, head_dim]
-    3) 在 Q,K 的前 rope_dim 个通道做 RoPE
-    4) 计算注意力
+    Multi-head attention with RoPE applied to Q/K.
+    1) Take input x: [B, N, C], where N=seq_len, C=embed_dim
+    2) Compute linear qkv => Q,K,V: [B, H, N, head_dim]
+    3) Apply RoPE on the first rope_dim channels of Q,K
+    4) Compute attention
     """
     def __init__(self, dim, num_heads=8, qkv_bias=False, rope_dim=None,
                  attn_drop=0., proj_drop=0.):
@@ -407,62 +404,63 @@ class RoPEAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-        # rope_dim 通常等于 head_dim
+        # rope_dim usually equals head_dim
         if rope_dim is None:
             rope_dim = self.head_dim
         self.rope_dim = rope_dim
         assert self.rope_dim % 2 == 0, "rope_dim must be even"
 
-        # 分别对 Q, K 进行旋转
+        # Separate rotation for Q and K
         self.rope_q = RotaryEmbedding(self.rope_dim)
         self.rope_k = RotaryEmbedding(self.rope_dim)
 
     def forward(self, x, mask=None):
         """
         x: [B, N, C], batch_size=B, seq_len=N, embed_dim=C
-        mask: [B, N] or [B, N, N] (可选)
+        mask: [B, N] or [B, N, N] (optional)
         """
         B, N, C = x.shape
-        # (1) qkv => [3, B, H, N, head_dim]
+        # QKV => [3, B, H, N, head_dim]
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)  # => [3, B, H, N, head_dim]
         q, k, v = qkv[0], qkv[1], qkv[2]  # => each [B, H, N, head_dim]
 
-        # (2) 对 Q,K 做 RoPE
+        # Apply RoPE to Q,K
         if self.rope_dim > 0 and self.rope_dim <= self.head_dim:
             rope_dim = self.rope_dim
-            # 切分
+            # Split
             q_rope, q_rem = q[..., :rope_dim], q[..., rope_dim:]
             k_rope, k_rem = k[..., :rope_dim], k[..., rope_dim:]
 
-            # 旋转
+            # Rotate
             q_rope = self.rope_q(q_rope, seq_len=N)  # => [B, H, N, rope_dim]
             k_rope = self.rope_k(k_rope, seq_len=N)
 
-            # 合并回去
+            # Merge back
             q = torch.cat([q_rope, q_rem], dim=-1)  # => [B,H,N,head_dim]
             k = torch.cat([k_rope, k_rem], dim=-1)
 
-        # (3) Scaled dot-product attn
+        # Scaled dot-product attention
         attn = (q @ k.transpose(-2, -1)) * self.scale  # => [B, H, N, N]
 
         if mask is not None:
-            # 如果 mask 形状为 [B, N, N] => broadcast到 [B, H, N, N]
-            # 也可以是 [B, 1, N, N] 或 [1, 1, N, N] 等
+            # If mask shape is [B, N, N] => broadcast to [B, H, N, N]
+            # Can also be [B, 1, N, N] or [1, 1, N, N] etc.
             attn = attn + mask
 
         attn = torch.softmax(attn, dim=-1)
         attn = self.attn_drop(attn)
 
-        # (4) 得到输出 => [B, H, N, head_dim]
+        # Get output => [B, H, N, head_dim]
         x_out = attn @ v
 
-        # (5) reshape => [B, N, C]
+        # Reshape => [B, N, C]
         x_out = x_out.transpose(1, 2).reshape(B, N, C)
         x_out = self.proj(x_out)
         x_out = self.proj_drop(x_out)
 
         return x_out
+
 
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
@@ -495,6 +493,7 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
         return x
     
+
 class WaveFormer(nn.Module):
     """ 
     Open model for general time series analysis 
@@ -542,9 +541,7 @@ class WaveFormer(nn.Module):
         """
         super().__init__()
 
-        # --------------------------------------------------------------------------
-        # 1) Encoder specifics
-        # --------------------------------------------------------------------------
+        # Encoder specifics
         self.patch_size = patch_size
         # Patch embedding (Conv2d with kernel_size=stride=patch_size)
         self.patch_embed = PatchEmbed(input_channels, patch_size, embed_dim, flatten=False)
@@ -552,72 +549,69 @@ class WaveFormer(nn.Module):
         # self.patch_embed = FreqPatchEmbed(in_chans=input_channels, patch_size=patch_size,
         #                                   embed_dim=embed_dim, n_fft=64, hop_length=32, flatten=False)
 
-        # 2) Wavelet convolution module
-        #    Because WTConv2d requires in_channels == out_channels, both are set to embed_dim
+        # Wavelet convolution module
+        # Because WTConv2d requires in_channels == out_channels, both are set to embed_dim
         self.wavelet_conv = DepthwiseSeparableConvWithWTConv2d(
             in_channels=embed_dim,
             out_channels=embed_dim,  # must match in_channels for WTConv2d
             kernel_size=3
         ) 
 
-        # learnable class token
+        # Learnable class token
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
-        # norm for the final CLS feature before the head
+        # Norm for the final CLS feature before the head
         self.fc_norm = norm_layer(embed_dim)
 
-        # domain-specific or domain-agnostic vertical grid info
+        # Domain-specific or domain-agnostic vertical grid info
         self.grid_height = {}
         for domain, input_size in domains.items():
-            # number of variates = input_size[1] // patch_size[0]
+            # Number of variates = input_size[1] // patch_size[0]
             grid_height = input_size[1] // patch_size[0]
             self.grid_height.update({domain: grid_height})
 
-        # horizontal pos_embed dimension
+        # Horizontal pos_embed dimension
         assert embed_dim % 2 == 0
         max_num_patches_x = time_steps // patch_size[1]
         self.max_num_patches_x = max_num_patches_x
         # +1 for the cls token position
         self.pos_embed_x = nn.Parameter(torch.zeros(1, max_num_patches_x + 1, embed_dim // 2), requires_grad=False)
 
-        # domain-agnostic or domain-specific pos_embed_y
+        # Domain-agnostic or domain-specific pos_embed_y
         self.domain_agnostic = domain_agnostic
         if self.domain_agnostic:
-            # shared pos_embed_y
+            # Shared pos_embed_y
             total_num_embeddings_y = 256
         else:
-            # domain-specific pos_embed_y
+            # Domain-specific pos_embed_y
             total_num_embeddings_y = sum([v for k, v in self.grid_height.items()])
 
         self.pos_embed_y = nn.Embedding(total_num_embeddings_y + 1, embed_dim // 2, padding_idx=0)  # +1 for padding
 
-        # main Transformer blocks
+        # Main Transformer blocks
         self.blocks = nn.ModuleList([
             Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(depth)
         ])
         self.norm = norm_layer(embed_dim)
 
-        # modify the attention operation to handle attention masks if needed
+        # Modify the attention operation to handle attention masks if needed
         for block in self.blocks:
             block.forward = self._block_forward_wrapper(block)
             block.attn = RoPEAttention(
-                dim=embed_dim,       # 或者 decoder_embed_dim，如果你在 decoder 里也要用
+                dim=embed_dim,       # Or decoder_embed_dim if using in decoder
                 num_heads=num_heads,
                 qkv_bias=True,
-                rope_dim=None,       # 默认使用 head_dim，也可自定义
+                rope_dim=None,       # Default uses head_dim, can be customized
                 attn_drop=0.0,
                 proj_drop=0.0
             )
 
-
-        # --------------------------------------------------------------------------
-        # 2) Output projection specifics
-        # --------------------------------------------------------------------------
+        # Output projection specifics
         self.output_projection = output_projection
 
         if self.output_projection == 'mlp':
-            # mask_token_encoder for masked patch tasks
+            # Mask token encoder for masked patch tasks
             self.mask_token_encoder = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
             # MLP for final projection
@@ -655,41 +649,31 @@ class WaveFormer(nn.Module):
             self.decoder_pred = nn.Linear(decoder_embed_dim,
                                           patch_size[0] * patch_size[1] * input_channels,
                                           bias=True)
-            # likewise, modify these blocks to handle attn masks if needed
+            # Likewise, modify these blocks to handle attn masks if needed
             for block in self.decoder_blocks:
                 block.forward = self._block_forward_wrapper(block)
-                # block.attn.forward = self._attention_forward_wrapper(block.attn)
                 block.attn = Attention(decoder_embed_dim, decoder_num_heads, qkv_bias=True)
 
-        # --------------------------------------------------------------------------
-        # 3) Contrastive specifics
-        # --------------------------------------------------------------------------
+        # Contrastive specifics
         self.criterion = torch.nn.CosineSimilarity(dim=1)
         proj_dim = int(1024)
         self.projector = nn.Sequential(
             nn.Linear(embed_dim, proj_dim, bias=False),
             nn.BatchNorm1d(proj_dim),
-            # nn.LayerNorm(proj_dim),
             nn.ReLU(inplace=True),
             nn.Linear(proj_dim, embed_dim, bias=False),
             nn.BatchNorm1d(embed_dim, affine=False)
-            # nn.LayerNorm(embed_dim),
         )
 
         pred_dim = int(128)
         self.predictor = nn.Sequential(
             nn.Linear(embed_dim, pred_dim, bias=False),
             nn.BatchNorm1d(pred_dim),
-            # nn.LayerNorm(pred_dim),
             nn.ReLU(inplace=True),
             nn.Linear(pred_dim, embed_dim, bias=False),
-            # nn.BatchNorm1d(embed_dim, affine=False)
-            # nn.LayerNorm(embed_dim),
         )
 
-        # --------------------------------------------------------------------------
         # Misc. settings
-        # --------------------------------------------------------------------------
         self.norm_pix_loss = norm_pix_loss
         self.masked_patch_loss = masked_patch_loss
 
@@ -703,13 +687,13 @@ class WaveFormer(nn.Module):
         self.forecasting_mask_ratio = forecasting_mask_ratio
 
         self.downstream = downstream
-        # define head + fc_norm according to downstream tasks
+        # Define head + fc_norm according to downstream tasks
         if self.downstream == 'classification':
-            # e.g., classification requires args.nb_classes
+            # Classification requires args.nb_classes
             self.head = nn.Linear(embed_dim, args.nb_classes)
             self.fc_norm = nn.LayerNorm(embed_dim, eps=1e-6)
         elif self.downstream == 'regression':
-            # e.g., regression tasks => self.head for output dimension
+            # Regression tasks => self.head for output dimension
             self.head = nn.Linear(embed_dim, args.nb_classes)
             self.fc_norm = nn.LayerNorm(embed_dim, eps=1e-6)
         else:
@@ -735,7 +719,7 @@ class WaveFormer(nn.Module):
 
     def initialize_weights(self):
         """Initialize all learnable parameters including positional embeddings, tokens, and heads."""
-        # 1) Initialize learnable pos_embed for the vertical axis
+        # Initialize learnable pos_embed for the vertical axis
         _pos_embed_y = torch.nn.Parameter(
             torch.randn(self.pos_embed_y.num_embeddings - 1, self.pos_embed_y.embedding_dim) * 0.02
         )
@@ -743,7 +727,7 @@ class WaveFormer(nn.Module):
         with torch.no_grad():
             self.pos_embed_y.weight[1:] = _pos_embed_y
 
-        # 2) If separate decoder pos_embed_y is used
+        # If separate decoder pos_embed_y is used
         if self.output_projection == "decoder" and self.separate_dec_pos_embed_y:
             _decoder_pos_embed_y = torch.nn.Parameter(
                 torch.randn(self.decoder_pos_embed_y.num_embeddings - 1, self.decoder_pos_embed_y.embedding_dim) * 0.02
@@ -752,7 +736,7 @@ class WaveFormer(nn.Module):
             with torch.no_grad():
                 self.decoder_pos_embed_y.weight[1:] = _decoder_pos_embed_y
 
-        # 3) Initialize (and freeze) pos_embed_x with sin-cos embedding
+        # Initialize (and freeze) pos_embed_x with sin-cos embedding
         _pos_embed_x = get_1d_sincos_pos_embed(
             self.pos_embed_x.shape[-1],
             self.pos_embed_x.shape[-2] - 1,
@@ -768,20 +752,20 @@ class WaveFormer(nn.Module):
             )
             self.decoder_pos_embed_x.data.copy_(torch.from_numpy(_decoder_pos_embed_x).float().unsqueeze(0))
 
-        # 4) Initialize patch_embed like nn.Linear (instead of nn.Conv2d)
+        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d)
         w = self.patch_embed.proj.weight.data
         torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
 
-        # 5) Initialize cls_token
+        # Initialize cls_token
         torch.nn.init.normal_(self.cls_token, std=0.02)
 
-        # 6) If decoder, init mask_token
+        # If decoder, init mask_token
         if self.output_projection == "decoder":
             torch.nn.init.normal_(self.mask_token, std=0.02)
         else:  # mlp
             torch.nn.init.normal_(self.mask_token_encoder, std=0.02)
 
-        # 7) Initialize nn.Linear and nn.LayerNorm layers
+        # Initialize nn.Linear and nn.LayerNorm layers
         self.apply(self._init_weights)
 
         # Initialize the final classification/regression head if needed
@@ -795,7 +779,7 @@ class WaveFormer(nn.Module):
         A helper function to initialize linear and LayerNorm layers with xavier/uniform.
         """
         if isinstance(m, nn.Linear):
-            # we use xavier_uniform following the official JAX ViT approach
+            # We use xavier_uniform following the official JAX ViT approach
             torch.nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
@@ -831,13 +815,13 @@ class WaveFormer(nn.Module):
         output:
             x: (B, 1+N, D), with 1 cls token + N (visible + masked) patches
         """
-        # 1) embed patches
+        # Embed patches
         # (B, D, C', T')
         x = self.patch_embed(x)
-        # 2) wavelet: [B, embed_dim, H', W']
-        #x = self.wavelet_conv(x)
+        # Wavelet: [B, embed_dim, H', W']
+        # x = self.wavelet_conv(x)
 
-        # 3) flatten => [B, N, D]
+        # Flatten => [B, N, D]
         B, C, Hp, Wp = x.shape
         x = x.view(B, C, Hp*Wp).transpose(1, 2)  # => (B, N, C)
 
@@ -845,28 +829,23 @@ class WaveFormer(nn.Module):
         cls_token = self.cls_token.expand(x.shape[0], -1, -1)  # => [B, 1, D]
         x = torch.cat((cls_token, x), dim=1)  # => [B, 1+N, D]
 
-        # 4) pass through Transformer blocks
+        # Pass through Transformer blocks
         for blk in self.blocks:
             x = blk(x)  # no attn_mask
 
-        # 5) norm
+        # Norm
         x = self.norm(x)
 
         return x
 
-    
-
-    
-    def forward_features(self, x,pos_embed_y):
+    def forward_features(self, x, pos_embed_y):
         """
         Extract embedding features from the input x and pos_embed_y, excluding the final prediction head.
         It is assumed that in the downstream finetuning process, this method will be called to obtain 
         the embedding, followed by calling forward_head for the final prediction.
         """
-
-        # You can refer to the logic of forward_encoder_all_patches or forward_encoder_with_masked_patches.
-        # Simplification: use forward_encoder_all_patches to extract features from all patches without masking,
-        # so as to obtain a stable embedding.
+        # Use forward_encoder_all_patches to extract features from all patches without masking,
+        # to obtain a stable embedding.
         # If masking is needed, modify this part accordingly.
 
         x = self.forward_encoder_all_patches(x)  # x: (B, 1+N, D)
@@ -876,23 +855,14 @@ class WaveFormer(nn.Module):
 
         return emb
 
-
     def forward_head(self, x, pre_logits: bool = False):
         x = self.fc_norm(x)
-
         return x if pre_logits else self.head(x)
-    
 
-    def forward(self, x,pos_embed_y):
-        x = self.forward_features(x,pos_embed_y)
+    def forward(self, x, pos_embed_y):
+        x = self.forward_features(x, pos_embed_y)
         x = self.forward_head(x)
         return x
-
-
-
-
-
-
 
 
 def Waveformer_base(**kwargs):
@@ -901,10 +871,3 @@ def Waveformer_base(**kwargs):
         decoder_embed_dim=8, decoder_depth=1, decoder_num_heads=1,        # dim=32 per head
         mlp_ratio=1, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
-
-
-
-
-
-
-
