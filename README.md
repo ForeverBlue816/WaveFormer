@@ -24,7 +24,7 @@ WaveFormer is a lightweight transformer-based architecture specifically tailored
 The WaveFormer pipeline is illustrated below:
 
 <p align="center">
-  <img src="model.pdf" width="800"> </p>
+  <img src="model.svg" width="800"> </p>
 
 1.  **Input Signal Processing**: The raw multi-channel sEMG signal (`C x T`) is first preprocessed, including filtering and normalization.
 2.  **Patch Embedding**: A learnable 2D convolution layer partitions the signal into non-overlapping patches and maps them to a fixed-dimensional latent vector, creating a 2D feature map (`D x C x N`).
