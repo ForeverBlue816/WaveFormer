@@ -1,1 +1,387 @@
+"""
+DB6 EMG Data Processing Pipeline
+Combines MAT to H5 conversion and H5 to PyTorch conversion
+"""
 
+import os
+import numpy as np
+import scipy.io
+import scipy.signal as signal
+import h5py
+import torch
+import argparse
+from collections import Counter
+from scipy.signal import iirnotch
+
+
+# Filtering functions
+def notch_filter(data, notch_freq=50.0, Q=30.0, fs=2000.0):
+    """Apply notch filter to every channel independently."""
+    b, a = iirnotch(notch_freq, Q, fs)
+    out = np.zeros_like(data)
+    for ch in range(data.shape[1]):
+        out[:, ch] = signal.filtfilt(b, a, data[:, ch])
+    return out
+
+
+def bandpass_filter_emg(emg, lowcut=20.0, highcut=90.0, fs=2000.0, order=4):
+    """Apply bandpass filter to EMG signals."""
+    nyq = 0.5 * fs
+    b, a = signal.butter(order, [lowcut / nyq, highcut / nyq], btype='bandpass')
+    out = np.zeros_like(emg)
+    for ch in range(emg.shape[1]):
+        out[:, ch] = signal.filtfilt(b, a, emg[:, ch])
+    return out
+
+
+def sliding_window_segment(emg, label, rerepetition, window_size, stride):
+    """
+    Segment EMG with a sliding window.
+    Use the frame at the window centre as the segment label / repetition index.
+    
+    Args:
+        emg: EMG signals (T, C)
+        label: Labels (T,)
+        rerepetition: Repetition indices (T,)
+        window_size: Window size for segmentation
+        stride: Step size for sliding window
+        
+    Returns:
+        segments: Segmented data (N, window_size, C)
+        labels: Labels for each segment (N,)
+        repetitions: Repetition indices for each segment (N,)
+    """
+    segments, labels, reps = [], [], []
+    n_samples = len(label)
+
+    for start in range(0, n_samples - window_size + 1, stride):
+        end = start + window_size
+        emg_segment = emg[start:end]                       # (win, ch)
+        centre_idx  = (start + end) // 2
+        segments.append(emg_segment)
+        labels.append(label[centre_idx])
+        reps.append(rerepetition[centre_idx])
+
+    return np.array(segments), np.array(labels), np.array(reps)
+
+
+def save_h5_file(file_path, data, labels):
+    """Save data to HDF5 file with statistics."""
+    print(f"Saving H5 file: {file_path}")
+    print(f"  Data shape: {data.shape}")
+    print(f"  Labels shape: {labels.shape}")
+    
+    with h5py.File(file_path, "w") as hf:
+        hf.create_dataset("data", data=data.astype(np.float32))
+        hf.create_dataset("label", data=labels.astype(np.int64))
+    
+    # Print label distribution
+    if len(labels) > 0:
+        label_counts = Counter(labels)
+        print("  Label distribution:")
+        for label, count in sorted(label_counts.items()):
+            print(f"    Label {int(label)}: {count} samples")
+
+
+def process_mat_to_h5(data_dir, save_dir, window_size=1024, stride=512, fs=2000.0):
+    """
+    Process MAT files to H5 format for DB6 dataset.
+    
+    Args:
+        data_dir: Directory containing subject folders with .mat files
+        save_dir: Output directory for H5 files
+        window_size: Window size for segmentation (default: 1024, ~0.512s at 2000Hz)
+        stride: Step size for sliding window (default: 512, 50% overlap)
+        fs: Sampling frequency (default: 2000.0 Hz)
+        
+    Returns:
+        dict: Paths to generated H5 files
+    """
+    print("=== Step 1: Converting MAT to H5 ===")
+    
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Dataset splits based on repetition indices for DB6
+    train_reps = list(range(1, 9))                      # 1–8
+    val_reps   = [9, 10]                                # 9–10
+    test_reps  = [11, 12]                               # 11–12
+
+    # Storage for different splits
+    splits = {
+        'train': {'data': [], 'label': []},
+        'val'  : {'data': [], 'label': []},
+        'test' : {'data': [], 'label': []},
+    }
+
+    # Get all subject folders
+    subject_folders = [f for f in sorted(os.listdir(data_dir)) 
+                      if os.path.isdir(os.path.join(data_dir, f))]
+    
+    if not subject_folders:
+        print(f"No subject folders found in {data_dir}")
+        return {}
+
+    print(f"Found {len(subject_folders)} subjects")
+
+    # Iterate over each subject in the data directory
+    for subj in subject_folders:
+        subj_path = os.path.join(data_dir, subj)
+        print(f"Processing subject {subj} ...")
+
+        subj_seg, subj_lbl, subj_rep = [], [], []
+
+        # Get all .mat files for this subject
+        mat_files = [f for f in sorted(os.listdir(subj_path)) if f.endswith('.mat')]
+        
+        for mat_file in mat_files:
+            mat_path = os.path.join(subj_path, mat_file)
+            print(f"  Loading file: {mat_file}")
+
+            try:
+                # Load the .mat file
+                mat = scipy.io.loadmat(mat_path)
+
+                emg   = mat["emg"]                           # (N, 16)
+                label = mat["restimulus"].ravel()
+                rerep = mat["rerepetition"].ravel()
+
+                # Drop empty channels (index 8, 9 → 0-based)
+                emg = np.delete(emg, [8, 9], axis=1)         # now (N, 14)
+
+                # Apply filtering
+                emg = bandpass_filter_emg(emg, 20, 90, fs=fs)
+                emg = notch_filter(emg, 50, 30, fs=fs)
+
+                # Z-score normalization per channel
+                mu  = emg.mean(axis=0)
+                sd  = emg.std(axis=0, ddof=1)
+                sd[sd == 0] = 1.0
+                emg = (emg - mu) / sd
+
+                # Apply sliding window segmentation
+                seg, lbl, rep = sliding_window_segment(
+                    emg, label, rerep, window_size, stride
+                )
+                subj_seg.append(seg)
+                subj_lbl.append(lbl)
+                subj_rep.append(rep)
+                
+                print(f"    Processed {len(seg)} segments")
+
+            except Exception as e:
+                print(f"    Error processing {mat_file}: {e}")
+                continue
+
+        if not subj_seg:
+            print(f"  No valid data found for subject {subj}")
+            continue
+
+        # Combine all data for this subject
+        seg = np.concatenate(subj_seg, axis=0)           # (M, win, 14)
+        lbl = np.concatenate(subj_lbl)
+        rep = np.concatenate(subj_rep)
+
+        # Split by repetition id and transpose to (N, C, T) format
+        for split_name, reps_list in [
+            ('train', train_reps),
+            ('val', val_reps), 
+            ('test', test_reps)
+        ]:
+            mask = np.isin(rep, reps_list)
+            X = seg[mask].transpose(0, 2, 1)             # (N, 14, 1024)
+            y = lbl[mask]
+            
+            if len(X) > 0:
+                splits[split_name]['data'].append(X)
+                splits[split_name]['label'].append(y)
+
+        print(f"  Subject {subj}: Train={np.sum(np.isin(rep, train_reps))}, "
+              f"Val={np.sum(np.isin(rep, val_reps))}, Test={np.sum(np.isin(rep, test_reps))}")
+
+    # Concatenate data from all subjects and save
+    h5_files = {}
+    
+    for split in ['train', 'val', 'test']:
+        if splits[split]['data']:
+            X = np.concatenate(splits[split]['data'], axis=0)
+            y = np.concatenate(splits[split]['label'], axis=0)
+        else:
+            X = np.empty((0, 14, window_size))
+            y = np.empty((0,), dtype=int)
+
+        h5_path = os.path.join(save_dir, f"db6_{split}_set.h5")
+        save_h5_file(h5_path, X, y)
+        h5_files[split] = h5_path
+
+        print(f"\n{split.upper()} → X={X.shape}")
+
+    return h5_files
+
+
+def convert_h5_to_pt(split, input_dir, output_dir, domain_name="db6"):
+    """
+    Load data from db6_{split}_set.h5 and convert to the .pt file format required by OTiS.
+    Also applies label remapping for DB6 specific classes.
+    
+    Args:
+        split: Dataset split name ('train', 'val', 'test')
+        input_dir: Directory containing H5 files
+        output_dir: Output directory for PT files
+        domain_name: Domain name for the data
+        
+    The data format is assumed to be:
+      data key: (N, C, W) 
+        N = number of samples,
+        C = number of channels (14 for DB6),
+        W = window length (number of time steps).
+      label key: (N,) 
+        corresponding labels.
+
+    Converted format:
+      data_list: [(domain_name, data_tensor), ...]
+        data_tensor should have the shape (C, W).
+      label_tensor: shape (N,) as a LongTensor with remapped labels.
+    """
+    
+    # DB6 label remapping: {1,3,4,6,9,10,11} -> [0..6]
+    old_to_new = {
+        1: 0,     # Rest
+        3: 1,     # Thumb flexion
+        4: 2,     # Thumb extension  
+        6: 3,     # Index flexion
+        9: 4,     # Middle flexion
+        10: 5,    # Ring flexion
+        11: 6     # Little flexion
+    }
+    
+    h5_file_name = f"db6_{split}_set.h5"
+    h5_path = os.path.join(input_dir, h5_file_name)
+
+    if not os.path.exists(h5_path):
+        print(f"File {h5_path} does not exist. Skipping {split} dataset.")
+        return
+
+    print(f"Converting H5 to PT: {h5_path}")
+    
+    with h5py.File(h5_path, "r") as h5f:
+        data = h5f["data"][:]    # (N, C, W)
+        labels = h5f["label"][:]  # (N,)
+
+    print(f"  Data shape: {data.shape}, Labels shape: {labels.shape}")
+
+    # Apply label remapping
+    labels_list = []
+    for old_label in labels:
+        if old_label in old_to_new:
+            labels_list.append(old_to_new[old_label])
+        else:
+            print(f"    Warning: Label {old_label} not in mapping, skipping sample")
+            continue
+
+    labels_tensor = torch.tensor(labels_list, dtype=torch.long)
+    
+    # Filter data to match filtered labels
+    valid_indices = [i for i, old_label in enumerate(labels) if old_label in old_to_new]
+    data = data[valid_indices]
+    
+    print(f"  After filtering: Data shape: {data.shape}, Labels shape: {labels_tensor.shape}")
+
+    # Convert data to OTiS format: (N, C, W) -> [(domain_name, tensor(C, W)), ...]
+    data_list = []
+    for sample in data:
+        # sample.shape = (C, W) - already in correct format for DB6
+        sample_tensor = torch.tensor(sample, dtype=torch.float32)
+        data_list.append((domain_name, sample_tensor))
+
+    # Print label distribution after remapping
+    label_counts = Counter(labels_tensor.numpy())
+    print("  Label distribution (after remapping):")
+    for label, count in sorted(label_counts.items()):
+        print(f"    Label {int(label)}: {count} samples")
+
+    # Save as .pt files
+    os.makedirs(output_dir, exist_ok=True)
+    data_pt_path = os.path.join(output_dir, f"{split}_data.pt")
+    label_pt_path = os.path.join(output_dir, f"{split}_label.pt")
+
+    torch.save(data_list, data_pt_path)
+    torch.save(labels_tensor, label_pt_path)
+
+    print(f"  PT files saved! Data: {data_pt_path}, Labels: {label_pt_path}")
+
+
+def process_h5_to_pt(h5_files, output_dir, domain_name="db6"):
+    """Convert H5 files to PyTorch format."""
+    print("\n=== Step 2: Converting H5 to PyTorch ===")
+    
+    splits = ["train", "val", "test"]
+    for split in splits:
+        h5_path = h5_files.get(split)
+        if h5_path and os.path.exists(h5_path):
+            input_dir = os.path.dirname(h5_path)
+            convert_h5_to_pt(split, input_dir, output_dir, domain_name)
+        else:
+            print(f"H5 file for {split} split not found, skipping.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="DB6 EMG Data Processing Pipeline")
+    parser.add_argument("--input_data", type=str, default="data/DB6",
+                        help="Path to input data directory containing subject folders")
+    parser.add_argument("--output_h5", type=str, default="data/processed/db6_h5",
+                        help="Output folder for H5 files")
+    parser.add_argument("--output_pt", type=str, default="data/processed/db6_pytorch",
+                        help="Output folder for PyTorch files")
+    parser.add_argument("--window_size", type=int, default=1024,
+                        help="Window size for segmentation (default: 1024 samples, ~0.512s)")
+    parser.add_argument("--stride", type=int, default=512,
+                        help="Step size for sliding window (default: 512, 50% overlap)")
+    parser.add_argument("--fs", type=float, default=2000.0,
+                        help="Sampling frequency (default: 2000.0 Hz)")
+    parser.add_argument("--domain_name", type=str, default="db6",
+                        help="Domain name for PyTorch format")
+    parser.add_argument("--skip_h5", action="store_true",
+                        help="Skip MAT to H5 conversion (use existing H5 files)")
+    parser.add_argument("--skip_pt", action="store_true",
+                        help="Skip H5 to PT conversion")
+    
+    args = parser.parse_args()
+
+    print(f"Processing DB6 with window_size={args.window_size}, stride={args.stride}, fs={args.fs}")
+
+    # Step 1: MAT to H5 conversion
+    if not args.skip_h5:
+        h5_files = process_mat_to_h5(
+            args.input_data, 
+            args.output_h5, 
+            args.window_size, 
+            args.stride, 
+            args.fs
+        )
+    else:
+        # Use existing H5 files
+        h5_files = {
+            "train": os.path.join(args.output_h5, "db6_train_set.h5"),
+            "val": os.path.join(args.output_h5, "db6_val_set.h5"),
+            "test": os.path.join(args.output_h5, "db6_test_set.h5"),
+        }
+        print("Skipping MAT to H5 conversion, using existing files:")
+        for name, path in h5_files.items():
+            print(f"  {name}: {path}")
+
+    # Step 2: H5 to PyTorch conversion
+    if not args.skip_pt:
+        process_h5_to_pt(h5_files, args.output_pt, args.domain_name)
+    else:
+        print("Skipping H5 to PT conversion")
+
+    print("\n=== Processing Complete ===")
+    print("Saved files:")
+    for split in ["train", "val", "test"]:
+        print(f"  {split}: db6_{split}_set.h5")
+        if not args.skip_pt:
+            print(f"  {split}: {split}_data.pt, {split}_label.pt")
+
+
+if __name__ == "__main__":
+    main()
