@@ -1,1 +1,361 @@
+"""
+DB5 EMG+ACC Data Processing Pipeline
+Combines MAT to H5 conversion and H5 to PyTorch conversion
+"""
 
+import os
+import numpy as np
+import scipy.io
+import h5py
+import torch
+import argparse
+from collections import Counter
+
+
+def process_emg_and_acc_features(emg, acc, label, rerepetition, window_size, stride):
+    """
+    Process EMG and ACC features using sliding window segmentation.
+    
+    Args:
+        emg: EMG signals (T, C_emg)
+        acc: ACC signals (T, C_acc) 
+        label: Labels (T,)
+        rerepetition: Repetition indices (T,)
+        window_size: Window size for segmentation
+        stride: Step size for sliding window
+        
+    Returns:
+        segments: Segmented data (N, window_size, C_emg + C_acc)
+        labels: Labels for each segment (N,)
+        repetitions: Repetition indices for each segment (N,)
+    """
+    segments = []
+    labels = []
+    repetitions = []
+
+    # Use a sliding window to segment the signals (including static portion)
+    for i in range(0, len(label) - window_size + 1, stride):
+        emg_segment = emg[i : i + window_size, :]
+        acc_segment = acc[i : i + window_size, :]
+        combined_segment = np.concatenate([emg_segment, acc_segment], axis=1)
+
+        segments.append(combined_segment)
+        labels.append(label[i])
+        repetitions.append(rerepetition[i])
+
+    return np.array(segments), np.array(labels), np.array(repetitions)
+
+
+def save_h5_file(file_path, data, labels):
+    """Save data to HDF5 file with statistics."""
+    print(f"Saving H5 file: {file_path}")
+    print(f"  Data shape: {data.shape}")
+    print(f"  Labels shape: {labels.shape}")
+    
+    with h5py.File(file_path, "w") as hf:
+        hf.create_dataset("data", data=data)
+        hf.create_dataset("label", data=labels)
+    
+    # Print label distribution
+    if len(labels) > 0:
+        label_counts = Counter(labels)
+        print("  Label distribution:")
+        for label, count in sorted(label_counts.items()):
+            print(f"    Label {int(label)}: {count} samples")
+
+
+def process_mat_to_h5(data_dir, save_dir, window_size=200, stride=50, fs=200):
+    """
+    Process MAT files to H5 format.
+    
+    Args:
+        data_dir: Directory containing subject folders with .mat files
+        save_dir: Output directory for H5 files
+        window_size: Window size for segmentation
+        stride: Step size for sliding window
+        fs: Sampling frequency
+        
+    Returns:
+        dict: Paths to generated H5 files
+    """
+    print("=== Step 1: Converting MAT to H5 ===")
+    
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Dataset splits based on repetition indices
+    train_repeats = [1, 3, 4, 6]
+    val_repeats = [2]
+    test_repeats = [5]
+
+    # Arrays to gather data from all subjects
+    all_train_data = []
+    all_train_label = []
+    all_val_data = []
+    all_val_label = []
+    all_test_data = []
+    all_test_label = []
+
+    # Get all subject folders
+    subject_folders = [f for f in sorted(os.listdir(data_dir)) 
+                      if os.path.isdir(os.path.join(data_dir, f))]
+    
+    if not subject_folders:
+        print(f"No subject folders found in {data_dir}")
+        return {}
+
+    print(f"Found {len(subject_folders)} subjects")
+
+    # Iterate over each subject in the data directory
+    for subject_folder in subject_folders:
+        subject_path = os.path.join(data_dir, subject_folder)
+        
+        print(f"Processing subject: {subject_folder}")
+        subject_segments = []
+        subject_labels = []
+        subject_repetitions = []
+
+        # Get all .mat files for this subject
+        mat_files = [f for f in sorted(os.listdir(subject_path)) if f.endswith('.mat')]
+        
+        for mat_file in mat_files:
+            mat_path = os.path.join(subject_path, mat_file)
+            print(f"  Loading file: {mat_file}")
+
+            try:
+                # Load the .mat file
+                data = scipy.io.loadmat(mat_path)
+                emg = data['emg']  # EMG signals
+                acc = data['acc']  # ACC signals
+                label = data['restimulus'].flatten()  # Labels
+                rerepetition = data['rerepetition'].flatten()  # Repetition indices
+
+                # Adjust labels based on experiment type
+                if 'E2' in mat_file:
+                    label = np.array([l + 12 if l != 0 else l for l in label])
+                elif 'E3' in mat_file:
+                    label = np.array([l + 29 if l != 0 else l for l in label])
+
+                # Z-score normalization
+                emg = (emg - np.mean(emg, axis=0)) / (np.std(emg, axis=0) + 1e-8)
+                acc = (acc - np.mean(acc, axis=0)) / (np.std(acc, axis=0) + 1e-8)
+
+                # Segment the data and extract features
+                segments, labels, repetitions = process_emg_and_acc_features(
+                    emg, acc, label, rerepetition, window_size, stride
+                )
+
+                # Collect results
+                subject_segments.append(segments)
+                subject_labels.append(labels)
+                subject_repetitions.append(repetitions)
+                
+                print(f"    Processed {len(segments)} segments")
+
+            except Exception as e:
+                print(f"    Error processing {mat_file}: {e}")
+                continue
+
+        # Combine all data for this subject
+        if len(subject_segments) == 0:
+            print(f"  No valid data found for subject {subject_folder}")
+            continue
+            
+        subject_segments = np.concatenate(subject_segments)
+        subject_labels = np.concatenate(subject_labels) 
+        subject_repetitions = np.concatenate(subject_repetitions)
+
+        # Split data based on repetition indices
+        train_indices = np.isin(subject_repetitions, train_repeats)
+        val_indices = np.isin(subject_repetitions, val_repeats)
+        test_indices = np.isin(subject_repetitions, test_repeats)
+
+        emg_train = subject_segments[train_indices]
+        label_train = subject_labels[train_indices]
+
+        emg_val = subject_segments[val_indices]
+        label_val = subject_labels[val_indices]
+
+        emg_test = subject_segments[test_indices]
+        label_test = subject_labels[test_indices]
+
+        # Append this subject's data to the global arrays
+        if len(emg_train) > 0:
+            all_train_data.append(emg_train)
+            all_train_label.append(label_train)
+        if len(emg_val) > 0:
+            all_val_data.append(emg_val)
+            all_val_label.append(label_val)
+        if len(emg_test) > 0:
+            all_test_data.append(emg_test)
+            all_test_label.append(label_test)
+
+        print(f"  Subject {subject_folder}: Train={len(emg_train)}, Val={len(emg_val)}, Test={len(emg_test)}")
+
+    # Concatenate data from all subjects
+    h5_files = {}
+    
+    if len(all_train_data) > 0:
+        all_train_data = np.concatenate(all_train_data)
+        all_train_label = np.concatenate(all_train_label)
+        train_path = os.path.join(save_dir, "db5_train_set.h5")
+        save_h5_file(train_path, all_train_data, all_train_label)
+        h5_files["train"] = train_path
+
+    if len(all_val_data) > 0:
+        all_val_data = np.concatenate(all_val_data)
+        all_val_label = np.concatenate(all_val_label)
+        val_path = os.path.join(save_dir, "db5_val_set.h5")
+        save_h5_file(val_path, all_val_data, all_val_label)
+        h5_files["val"] = val_path
+
+    if len(all_test_data) > 0:
+        all_test_data = np.concatenate(all_test_data)
+        all_test_label = np.concatenate(all_test_label)
+        test_path = os.path.join(save_dir, "db5_test_set.h5")
+        save_h5_file(test_path, all_test_data, all_test_label)
+        h5_files["test"] = test_path
+
+    return h5_files
+
+
+def convert_h5_to_pt(split, input_dir, output_dir, domain_name="db5"):
+    """
+    Load data from db5_{split}_set.h5 and convert to the .pt file format required by OTiS.
+    
+    Args:
+        split: Dataset split name ('train', 'val', 'test')
+        input_dir: Directory containing H5 files
+        output_dir: Output directory for PT files
+        domain_name: Domain name for the data
+        
+    The data format is assumed to be:
+      data key: (N, W, C) 
+        N = number of samples,
+        W = window length (number of time steps),
+        C = number of channels (including EMG and ACC).
+      label key: (N,) 
+        corresponding labels.
+
+    Converted format:
+      data_list: [(domain_name, data_tensor), ...]
+        data_tensor should have the shape (C, W), i.e. (number of channels, number of time steps).
+        If the original data is (N, W, C), then transpose is needed to get (C, W).
+      label_tensor: shape (N,) as a LongTensor.
+    """
+    h5_file_name = f"db5_{split}_set.h5"
+    h5_path = os.path.join(input_dir, h5_file_name)
+
+    if not os.path.exists(h5_path):
+        print(f"File {h5_path} does not exist. Skipping {split} dataset.")
+        return
+
+    print(f"Converting H5 to PT: {h5_path}")
+    
+    with h5py.File(h5_path, "r") as h5f:
+        data = h5f["data"][:]
+        labels = h5f["label"][:]
+
+    print(f"  Data shape: {data.shape}, Labels shape: {labels.shape}")
+
+    # The shape of data is assumed to be (N, W, C).
+    # OTiS requires (C, W), so transpose each sample.
+    # The final data_list element will be (domain_name, tensor(C, W)).
+    # Also ensure the data type is float32.
+    # Convert labels to a long tensor.
+
+    data_list = []
+    for sample in data:
+        # sample.shape = (W, C)
+        # Transpose to (C, W)
+        sample_tensor = torch.tensor(sample, dtype=torch.float32).transpose(0, 1)
+        data_list.append((domain_name, sample_tensor))
+
+    labels_tensor = torch.tensor(labels, dtype=torch.long)
+
+    # Print label distribution
+    label_counts = Counter(labels)
+    print("  Label distribution:")
+    for label, count in sorted(label_counts.items()):
+        print(f"    Label {int(label)}: {count} samples")
+
+    # Save as .pt files
+    os.makedirs(output_dir, exist_ok=True)
+    data_pt_path = os.path.join(output_dir, f"{split}_data.pt")
+    label_pt_path = os.path.join(output_dir, f"{split}_label.pt")
+
+    torch.save(data_list, data_pt_path)
+    torch.save(labels_tensor, label_pt_path)
+
+    print(f"  PT files saved! Data: {data_pt_path}, Labels: {label_pt_path}")
+
+
+def process_h5_to_pt(h5_files, output_dir, domain_name="db5"):
+    """Convert H5 files to PyTorch format."""
+    print("\n=== Step 2: Converting H5 to PyTorch ===")
+    
+    splits = ["train", "val", "test"]
+    for split in splits:
+        h5_path = h5_files.get(split)
+        if h5_path and os.path.exists(h5_path):
+            input_dir = os.path.dirname(h5_path)
+            convert_h5_to_pt(split, input_dir, output_dir, domain_name)
+        else:
+            print(f"H5 file for {split} split not found, skipping.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="DB5 EMG+ACC Data Processing Pipeline")
+    parser.add_argument("--input_data", type=str, default="data/DB5",
+                        help="Path to input data directory containing subject folders")
+    parser.add_argument("--output_h5", type=str, default="data/processed/db5_h5",
+                        help="Output folder for H5 files")
+    parser.add_argument("--output_pt", type=str, default="data/processed/db5_pytorch",
+                        help="Output folder for PyTorch files")
+    parser.add_argument("--window_size", type=int, default=200,
+                        help="Window size for segmentation")
+    parser.add_argument("--stride", type=int, default=50,
+                        help="Step size for sliding window")
+    parser.add_argument("--fs", type=int, default=200,
+                        help="Sampling frequency")
+    parser.add_argument("--domain_name", type=str, default="db5",
+                        help="Domain name for PyTorch format")
+    parser.add_argument("--skip_h5", action="store_true",
+                        help="Skip MAT to H5 conversion (use existing H5 files)")
+    parser.add_argument("--skip_pt", action="store_true",
+                        help="Skip H5 to PT conversion")
+    
+    args = parser.parse_args()
+
+    print(f"Processing with window_size={args.window_size}, stride={args.stride}")
+
+    # Step 1: MAT to H5 conversion
+    if not args.skip_h5:
+        h5_files = process_mat_to_h5(
+            args.input_data, 
+            args.output_h5, 
+            args.window_size, 
+            args.stride, 
+            args.fs
+        )
+    else:
+        # Use existing H5 files
+        h5_files = {
+            "train": os.path.join(args.output_h5, "db5_train_set.h5"),
+            "val": os.path.join(args.output_h5, "db5_val_set.h5"),
+            "test": os.path.join(args.output_h5, "db5_test_set.h5"),
+        }
+        print("Skipping MAT to H5 conversion, using existing files:")
+        for name, path in h5_files.items():
+            print(f"  {name}: {path}")
+
+    # Step 2: H5 to PyTorch conversion
+    if not args.skip_pt:
+        process_h5_to_pt(h5_files, args.output_pt, args.domain_name)
+    else:
+        print("Skipping H5 to PT conversion")
+
+    print("\n=== Processing Complete ===")
+
+
+if __name__ == "__main__":
+    main()
