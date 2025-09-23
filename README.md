@@ -24,10 +24,10 @@ WaveFormer is a lightweight transformer-based architecture specifically tailored
 The WaveFormer pipeline is illustrated below:
 
 <p align="center">
-  <img src="waveformer.svg" width="800"> </p>
+  <img src="fig/model.svg" width="800"> </p>
 
 <p align="center">
-  <img src="wtconv.svg" width="800"> </p>
+  <img src="fig/wtconv.svg" width="600"> </p>
 1.  **Input Signal Processing**: The raw multi-channel sEMG signal (`C x T`) is first preprocessed, including filtering and normalization.
 2.  **Patch Embedding**: A learnable 2D convolution layer partitions the signal into non-overlapping patches and maps them to a fixed-dimensional latent vector, creating a 2D feature map (`D x C x N`).
 3.  **WaveletConv**: This core module performs multi-level wavelet decomposition and reconstruction on the 2D feature map to extract rich, multi-scale time-frequency features.
