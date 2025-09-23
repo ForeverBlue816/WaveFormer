@@ -7,17 +7,17 @@
 
 This is the official PyTorch implementation of the paper **"WaveFormer: A Lightweight Transformer Model for sEMG-based Gesture Recognition"**.
 
-WaveFormer is a lightweight transformer-based architecture specifically tailored for surface electromyographic (sEMG) gesture recognition. [cite_start]Traditional deep learning models are often too large and computationally expensive for deployment on resource-constrained embedded systems[cite: 5]. [cite_start]Our work addresses this challenge, demonstrating that careful architectural design can eliminate the traditional trade-off between model size and accuracy[cite: 246].
+WaveFormer is a lightweight transformer-based architecture specifically tailored for surface electromyographic (sEMG) gesture recognition. Traditional deep learning models are often too large and computationally expensive for deployment on resource-constrained embedded systems. Our work addresses this challenge, demonstrating that careful architectural design can eliminate the traditional trade-off between model size and accuracy.
 
 ## ✨ Key Features
 
-* [cite_start]**Lightweight Design**: With only **3.1 million parameters**, the model is perfectly suited for wearable devices and embedded systems with limited computational power[cite: 9, 31].
-* [cite_start]**Innovative WaveletConv Module**: Introduces a novel learnable wavelet transform that adaptively integrates time-domain and frequency-domain features to enhance feature extraction[cite: 7, 30]. [cite_start]It uses depthwise separable convolutions to ensure both efficiency and compactness[cite: 8].
-* [cite_start]**Efficient Transformer Architecture**: Employs efficient Transformer blocks with Rotary Positional Embedding (RoPE) to effectively capture long-range dependencies in the sEMG signals[cite: 27, 60].
-* [cite_start]**State-of-the-Art Performance**: Achieves SOTA performance on multiple public sEMG datasets, outperforming much larger foundation models and other lightweight architectures[cite: 32, 195].
-    * [cite_start]**95%** classification accuracy on the EPN612 dataset[cite: 9, 33].
-    * [cite_start]**81.93%** accuracy on the challenging Ninapro DB6 inter-session protocol[cite: 33, 212].
-* [cite_start]**Real-Time Inference**: Achieves an inference latency of just **6.75 ms** per sample on a standard CPU (Intel Core i7-11800H) with INT8 quantization, making it ideal for real-time applications[cite: 10, 241, 247].
+* **Lightweight Design**: With only **3.1 million parameters**, the model is perfectly suited for wearable devices and embedded systems with limited computational power.
+* **Innovative WaveletConv Module**: Introduces a novel learnable wavelet transform that adaptively integrates time-domain and frequency-domain features to enhance feature extraction. It uses depthwise separable convolutions to ensure both efficiency and compactness.
+* **Efficient Transformer Architecture**: Employs efficient Transformer blocks with Rotary Positional Embedding (RoPE) to effectively capture long-range dependencies in the sEMG signals.
+* **State-of-the-Art Performance**: Achieves SOTA performance on multiple public sEMG datasets, outperforming much larger foundation models and other lightweight architectures.
+    * **95%** classification accuracy on the EPN612 dataset.
+    * **81.93%** accuracy on the challenging Ninapro DB6 inter-session protocol.
+* **Real-Time Inference**: Achieves an inference latency of just **6.75 ms** per sample on a standard CPU (Intel Core i7-11800H) with INT8 quantization, making it ideal for real-time applications.
 
 ## 🔬 Model Architecture
 
@@ -26,11 +26,11 @@ The WaveFormer pipeline is illustrated below:
 <p align="center">
   <img src="figure/architecture.png" width="800"> </p>
 
-1.  [cite_start]**Input Signal Processing**: The raw multi-channel sEMG signal (`C x T`) is first preprocessed, including filtering and normalization[cite: 74].
-2.  [cite_start]**Patch Embedding**: A learnable 2D convolution layer partitions the signal into non-overlapping patches and maps them to a fixed-dimensional latent vector, creating a 2D feature map (`D x C x N`)[cite: 79, 100].
-3.  [cite_start]**WaveletConv**: This core module performs multi-level wavelet decomposition and reconstruction on the 2D feature map to extract rich, multi-scale time-frequency features[cite: 101, 109].
-4.  [cite_start]**Transformer Encoder**: The wavelet-enhanced features are flattened and fed into a 6-layer Transformer encoder[cite: 167]. [cite_start]The encoder uses **RoPEAttention** to capture global temporal correlations[cite: 102, 167].
-5.  [cite_start]**Classification Head**: Finally, a simple linear classification head predicts the gesture class based on the Transformer's output[cite: 103, 176].
+1.  **Input Signal Processing**: The raw multi-channel sEMG signal (`C x T`) is first preprocessed, including filtering and normalization.
+2.  **Patch Embedding**: A learnable 2D convolution layer partitions the signal into non-overlapping patches and maps them to a fixed-dimensional latent vector, creating a 2D feature map (`D x C x N`).
+3.  **WaveletConv**: This core module performs multi-level wavelet decomposition and reconstruction on the 2D feature map to extract rich, multi-scale time-frequency features.
+4.  **Transformer Encoder**: The wavelet-enhanced features are flattened and fed into a 6-layer Transformer encoder. The encoder uses **RoPEAttention** to capture global temporal correlations.
+5.  **Classification Head**: Finally, a simple linear classification head predicts the gesture class based on the Transformer's output.
 
 ## 🚀 Getting Started
 
@@ -38,11 +38,11 @@ The WaveFormer pipeline is illustrated below:
 
 ```bash
 # Clone this repository
-git clone [https://github.com/ForeverBlue816/WaveFormer.git](https://github.com/your-username/WaveFormer.git)
+git clone [https://github.com/your-username/WaveFormer.git](https://github.com/your-username/WaveFormer.git)
 cd WaveFormer
 
 # Create and activate a conda environment (recommended)
-conda create -n waveformer python=3.11
+conda create -n waveformer python=3.9
 conda activate waveformer
 
 # Install dependencies
@@ -163,7 +163,7 @@ If you use our code or model in your research, please cite our paper:
 
 ## Acknowledgments
 
-This research was partly supported by the EU Horizon Europe project IntelliMan (g.a. [cite_start]101070136), the PNRR MUR project ECS00000033ECOSISTER, and the ETH Zürich's Future Computing Laboratory funded by a donation from Huawei Technologies[cite: 255]. [cite_start]The research was also partially supported by the EU Horizon Europe project HAL4SDV (g.a. 101139789)[cite: 256].
+This research was partly supported by the EU Horizon Europe project IntelliMan (g.a. 101070136), the PNRR MUR project ECS00000033ECOSISTER, and the ETH Zürich's Future Computing Laboratory funded by a donation from Huawei Technologies. The research was also partially supported by the EU Horizon Europe project HAL4SDV (g.a. 101139789).
 
 ## License
 
