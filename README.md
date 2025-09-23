@@ -23,16 +23,29 @@ WaveFormer is a lightweight transformer-based architecture specifically tailored
 
 The WaveFormer pipeline is illustrated below:
 
-<p align="center">
-  <img src="fig/model.svg" width="800"> </p>
+<div align="center">
+  <img src="fig/model.svg" alt="WaveFormer Architecture" width="800">
+  <br>
+  <em>Figure 1: Overall WaveFormer Architecture</em>
+</div>
 
-<p align="center">
-  <img src="fig/wtconv.svg" width="600"> </p>
-1.  **Input Signal Processing**: The raw multi-channel sEMG signal (`C x T`) is first preprocessed, including filtering and normalization.
-2.  **Patch Embedding**: A learnable 2D convolution layer partitions the signal into non-overlapping patches and maps them to a fixed-dimensional latent vector, creating a 2D feature map (`D x C x N`).
-3.  **WaveletConv**: This core module performs multi-level wavelet decomposition and reconstruction on the 2D feature map to extract rich, multi-scale time-frequency features.
-4.  **Transformer Encoder**: The wavelet-enhanced features are flattened and fed into a 6-layer Transformer encoder. The encoder uses **RoPEAttention** to capture global temporal correlations.
-5.  **Classification Head**: Finally, a simple linear classification head predicts the gesture class based on the Transformer's output.
+<div align="center">
+  <img src="fig/wtconv.svg" alt="WaveletConv Module" width="600">
+  <br>
+  <em>Figure 2: WaveletConv Module Details</em>
+</div>
+
+### Pipeline Overview
+
+1. **Input Signal Processing**: The raw multi-channel sEMG signal (`C × T`) is first preprocessed, including filtering and normalization.
+
+2. **Patch Embedding**: A learnable 2D convolution layer partitions the signal into non-overlapping patches and maps them to a fixed-dimensional latent vector, creating a 2D feature map (`D × C × N`).
+
+3. **WaveletConv**: This core module performs multi-level wavelet decomposition and reconstruction on the 2D feature map to extract rich, multi-scale time-frequency features.
+
+4. **Transformer Encoder**: The wavelet-enhanced features are flattened and fed into a 6-layer Transformer encoder. The encoder uses **RoPEAttention** to capture global temporal correlations.
+
+5. **Classification Head**: Finally, a simple linear classification head predicts the gesture class based on the Transformer's output.
 
 ## 🚀 Getting Started
 
