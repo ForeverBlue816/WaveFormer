@@ -24,7 +24,7 @@ WaveFormer is a lightweight transformer-based architecture specifically tailored
 The WaveFormer pipeline is illustrated below:
 
 <p align="center">
-  <img src="figure/architecture.png" width="800"> </p>
+  <img src="model.pdf" width="800"> </p>
 
 1.  **Input Signal Processing**: The raw multi-channel sEMG signal (`C x T`) is first preprocessed, including filtering and normalization.
 2.  **Patch Embedding**: A learnable 2D convolution layer partitions the signal into non-overlapping patches and maps them to a fixed-dimensional latent vector, creating a 2D feature map (`D x C x N`).
@@ -42,7 +42,7 @@ git clone [https://github.com/your-username/WaveFormer.git](https://github.com/y
 cd WaveFormer
 
 # Create and activate a conda environment (recommended)
-conda create -n waveformer python=3.9
+conda create -n waveformer python=3.11
 conda activate waveformer
 
 # Install dependencies
