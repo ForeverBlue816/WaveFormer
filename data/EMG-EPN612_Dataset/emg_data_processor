@@ -1,1 +1,293 @@
+"""
+EPN612 EMG Data Processing Pipeline
+Combines JSON to H5 conversion and H5 to PyTorch conversion
+"""
 
+import glob
+import json
+import os
+import h5py
+import numpy as np
+import torch
+from tqdm.auto import tqdm
+from collections import Counter
+import argparse
+
+
+# Configuration
+FS = 200.0  # Sampling frequency
+N_CH = 8   # Number of EMG channels
+GESTURE_MAP = {
+    "noGesture": 0,
+    "waveIn": 1,
+    "waveOut": 2,
+    "pinch": 3,
+    "open": 4,
+    "fist": 5,
+    "notProvided": 6,  # Invalid gesture
+}
+
+
+def normalize_signal(signal: np.ndarray) -> np.ndarray:
+    """Normalize the signal by its maximum absolute value."""
+    max_abs_value = np.max(np.abs(signal), axis=1, keepdims=True)
+    max_abs_value[max_abs_value == 0] = 1  # Avoid division by zero
+    return signal / max_abs_value
+
+
+def adjust_length(x: np.ndarray, max_len: int) -> np.ndarray:
+    """Adjust the signal length to a fixed maximum length."""
+    n_ch, seq_len = x.shape
+    if seq_len >= max_len:
+        return x[:, :max_len]
+    padding = np.zeros((n_ch, max_len - seq_len), dtype=x.dtype)
+    return np.concatenate((x, padding), axis=1)
+
+
+def extract_emg_signal(data_struct: dict, seq_len: int) -> tuple[np.ndarray, int]:
+    """Extract EMG signal and label from the data structure."""
+    emg = np.stack([emg_i for emg_i in data_struct["emg"].values()], dtype=np.float32) / 128
+    emg = adjust_length(emg, seq_len)
+    emg = normalize_signal(emg)
+    label = GESTURE_MAP.get(data_struct.get("gestureName", "notProvided"), 6)
+    return emg, label
+
+
+def save_h5_file(file_path, emg_data, labels):
+    """Save the data to an HDF5 file."""
+    print(f"Saving H5 file: {file_path}")
+    print(f"  Data shape: {np.array(emg_data).shape}")
+    print(f"  Labels shape: {np.array(labels).shape}")
+    
+    with h5py.File(file_path, "w") as h5f:
+        h5f.create_dataset("data", data=np.array(emg_data, dtype=np.float32))
+        h5f.create_dataset("label", data=np.array(labels, dtype=np.int64))
+    
+    # Print label distribution
+    label_counts = Counter(labels)
+    print("  Label distribution:")
+    for label, count in sorted(label_counts.items()):
+        print(f"    Label {label}: {count} samples")
+
+
+def process_training_json(source_folder, seq_len, train_data, train_labels, val_data, val_labels):
+    """
+    Process Training JSON files.
+    - All trainingSamples go to train_data and train_labels.
+    - All testingSamples go to val_data and val_labels.
+    """
+    user_file_paths = glob.glob(os.path.join(source_folder, "user*", "user*.json"))
+    print(f"Found {len(user_file_paths)} training JSON files")
+    
+    for file_path in tqdm(user_file_paths, desc="Processing Training JSON Data", leave=False):
+        with open(file_path, "r", encoding="utf-8") as f:
+            user_data = json.load(f)
+
+        # Add trainingSamples to train_data/train_labels
+        for sample in user_data.get("trainingSamples", {}).values():
+            emg, label = extract_emg_signal(sample, seq_len)
+            if label == 6:
+                continue
+            train_data.append(emg)
+            train_labels.append(label)
+
+        # Add testingSamples to val_data/val_labels
+        testing_samples = list(user_data.get("testingSamples", {}).values())
+        for sample in testing_samples:
+            emg, label = extract_emg_signal(sample, seq_len)
+            if label == 6:
+                continue
+            val_data.append(emg)
+            val_labels.append(label)
+
+
+def process_testing_json(source_folder, seq_len, train_data, train_labels, test_data, test_labels):
+    """
+    Process Testing JSON files.
+    - Collect trainingSamples for each gesture.
+    - For each gesture, the first 10 samples go to train_data/train_labels, 
+      and the rest go to test_data/test_labels.
+    """
+    user_file_paths = glob.glob(os.path.join(source_folder, "user*", "user*.json"))
+    print(f"Found {len(user_file_paths)} testing JSON files")
+    
+    for file_path in tqdm(user_file_paths, desc="Processing Testing JSON Data", leave=False):
+        with open(file_path, "r", encoding="utf-8") as f:
+            user_data = json.load(f)
+
+        gesture_map_data = {gesture: [] for gesture in GESTURE_MAP.keys()}
+
+        for sample in user_data.get("trainingSamples", {}).values():
+            gesture_name = sample.get("gestureName", "notProvided")
+            if gesture_name in gesture_map_data:
+                gesture_map_data[gesture_name].append(sample)
+
+        for gesture, samples in gesture_map_data.items():
+            for i, sample in enumerate(samples):
+                emg, label = extract_emg_signal(sample, seq_len)
+                if label == 6:
+                    continue
+                if i < 10:
+                    train_data.append(emg)
+                    train_labels.append(label)
+                else:
+                    test_data.append(emg)
+                    test_labels.append(label)
+
+
+def convert_h5_to_pt(h5_file_path, output_folder, dataset_name, domain_name="emg612"):
+    """
+    Convert an HDF5 file to a PyTorch format compatible with the OTIS model.
+    Each sample will be a tuple of the form (domain_name, data).
+    """
+    try:
+        print(f"Converting H5 to PT: {h5_file_path}")
+
+        # Load the HDF5 file
+        with h5py.File(h5_file_path, "r") as h5f:
+            if "data" not in h5f or "label" not in h5f:
+                raise KeyError(f"HDF5 file {h5_file_path} does not contain 'data' or 'label' keys!")
+
+            data = h5f["data"][:]
+            labels = h5f["label"][:]
+            print(f"  Data shape: {data.shape}, Label shape: {labels.shape}")
+
+        # Check data and label integrity
+        assert data.shape[0] == labels.shape[0], "Mismatch in the number of samples between data and labels!"
+        assert not np.isnan(data).any(), "Data contains NaN values!"
+        assert not np.isnan(labels).any(), "Labels contain NaN values!"
+
+        # Convert data to a list of (domain_name, data) tuples
+        data_list = [(domain_name, torch.tensor(sample, dtype=torch.float32)) for sample in data]
+
+        # Convert labels to a tensor
+        label_tensor = torch.tensor(labels, dtype=torch.int64)
+
+        # Print label distribution
+        label_counts = Counter(labels)
+        print("  Label distribution:")
+        for label, count in sorted(label_counts.items()):
+            print(f"    Label {label}: {count} samples")
+
+        # Prepare output paths
+        os.makedirs(output_folder, exist_ok=True)
+        data_file_path = os.path.join(output_folder, f"{dataset_name}_data.pt")
+        label_file_path = os.path.join(output_folder, f"{dataset_name}_label.pt")
+
+        # Save as .pt files
+        torch.save(data_list, data_file_path)
+        torch.save(label_tensor, label_file_path)
+        print(f"  PT files saved! Data: {data_file_path}, Label: {label_file_path}")
+
+    except Exception as e:
+        print(f"Error converting {h5_file_path} to PT: {e}")
+
+
+def process_json_to_h5(source_training, source_testing, dest_folder, seq_len):
+    """Process JSON files and convert to H5 format."""
+    print("=== Step 1: Converting JSON to H5 ===")
+    
+    os.makedirs(dest_folder, exist_ok=True)
+
+    train_data, train_labels = [], []
+    val_data, val_labels = [], []
+    test_data, test_labels = [], []
+
+    # Process training JSON
+    if os.path.exists(source_training):
+        process_training_json(source_training, seq_len, train_data, train_labels, val_data, val_labels)
+    else:
+        print(f"Warning: Training folder {source_training} not found")
+
+    # Process testing JSON
+    if os.path.exists(source_testing):
+        process_testing_json(source_testing, seq_len, train_data, train_labels, test_data, test_labels)
+    else:
+        print(f"Warning: Testing folder {source_testing} not found")
+
+    # Save final datasets
+    h5_files = {}
+    if train_data:
+        train_path = os.path.join(dest_folder, "epn612_train_set.h5")
+        save_h5_file(train_path, train_data, train_labels)
+        h5_files["train"] = train_path
+
+    if val_data:
+        val_path = os.path.join(dest_folder, "epn612_val_set.h5")
+        save_h5_file(val_path, val_data, val_labels)
+        h5_files["val"] = val_path
+
+    if test_data:
+        test_path = os.path.join(dest_folder, "epn612_test_set.h5")
+        save_h5_file(test_path, test_data, test_labels)
+        h5_files["test"] = test_path
+
+    return h5_files
+
+
+def process_h5_to_pt(h5_files, output_folder, domain_name="emg612"):
+    """Convert H5 files to PyTorch format."""
+    print("\n=== Step 2: Converting H5 to PyTorch ===")
+    
+    for dataset_name, h5_file_path in h5_files.items():
+        if os.path.exists(h5_file_path):
+            convert_h5_to_pt(h5_file_path, output_folder, dataset_name, domain_name)
+        else:
+            print(f"H5 file {h5_file_path} does not exist. Skipping {dataset_name} dataset.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="EMG Data Processing Pipeline")
+    parser.add_argument("--input_training", type=str, default="data/EMG-EPN612_Dataset/trainingJSON",
+                        help="Path to training JSON folder")
+    parser.add_argument("--input_testing", type=str, default="data/EMG-EPN612_Dataset/testingJSON",
+                        help="Path to testing JSON folder")
+    parser.add_argument("--output_h5", type=str, default="data/processed/h5",
+                        help="Output folder for H5 files")
+    parser.add_argument("--output_pt", type=str, default="data/processed/pytorch",
+                        help="Output folder for PyTorch files")
+    parser.add_argument("--seq_len_seconds", type=float, default=5.0,
+                        help="Sequence length in seconds")
+    parser.add_argument("--domain_name", type=str, default="emg612",
+                        help="Domain name for PyTorch format")
+    parser.add_argument("--skip_h5", action="store_true",
+                        help="Skip JSON to H5 conversion (use existing H5 files)")
+    parser.add_argument("--skip_pt", action="store_true",
+                        help="Skip H5 to PT conversion")
+    
+    args = parser.parse_args()
+
+    # Calculate sequence length
+    seq_len = int(round(args.seq_len_seconds * FS))
+    print(f"Processing with sequence length: {seq_len} samples ({args.seq_len_seconds}s)")
+
+    # Step 1: JSON to H5 conversion
+    if not args.skip_h5:
+        h5_files = process_json_to_h5(
+            args.input_training, 
+            args.input_testing, 
+            args.output_h5, 
+            seq_len
+        )
+    else:
+        # Use existing H5 files
+        h5_files = {
+            "train": os.path.join(args.output_h5, "epn612_train_set.h5"),
+            "val": os.path.join(args.output_h5, "epn612_val_set.h5"),
+            "test": os.path.join(args.output_h5, "epn612_test_set.h5"),
+        }
+        print("Skipping JSON to H5 conversion, using existing files:")
+        for name, path in h5_files.items():
+            print(f"  {name}: {path}")
+
+    # Step 2: H5 to PyTorch conversion
+    if not args.skip_pt:
+        process_h5_to_pt(h5_files, args.output_pt, args.domain_name)
+    else:
+        print("Skipping H5 to PT conversion")
+
+    print("\n=== Processing Complete ===")
+
+
+if __name__ == "__main__":
+    main()
