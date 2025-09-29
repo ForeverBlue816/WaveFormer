@@ -52,15 +52,19 @@ The WaveFormer pipeline is illustrated below:
 ### 1. Setup Environment
 
 ```bash
-# Clone this repository
-git clone [https://github.com/ForeverBlue816/WaveFormer.git]
+# Clone repository
+git clone https://github.com/ForeverBlue816/WaveFormer.git
 cd WaveFormer
 
-# Create and activate a conda environment (recommended)
+# Create conda environment with Python 3.11
 conda create -n waveformer python=3.11
 conda activate waveformer
 
-# Install dependencies
+# Install PyTorch first (important!)
+# For CUDA 12.1 (match your system)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Then install other dependencies
 pip install -r requirements.txt
 ```
 
