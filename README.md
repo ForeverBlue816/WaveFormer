@@ -53,7 +53,7 @@ The WaveFormer pipeline is illustrated below:
 
 ```bash
 # Clone this repository
-git clone [https://github.com/ForeverBlue816/WaveFormer.git](https://github.com/ForeverBlue816/WaveFormer.git)
+git clone [https://github.com/ForeverBlue816/WaveFormer.git]
 cd WaveFormer
 
 # Create and activate a conda environment (recommended)
