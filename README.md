@@ -3,7 +3,7 @@
 [![Paper](https://img.shields.io/badge/paper-arXiv-red)](https://arxiv.org/abs/2506.11168)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-🎉 **Accepted at the 2025 12th International IEEE/EMBS Conference on Neural Engineering (NER)!**
+🎉 **Accepted at the 2025 12th International IEEE/EMBS Conference on Neural Engineering (NER) as spotlight paper!**
 
 This is the official PyTorch implementation of the paper **"WaveFormer: A Lightweight Transformer Model for sEMG-based Gesture Recognition"**.
 
